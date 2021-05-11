@@ -16,7 +16,6 @@ type protocol struct {
 	nsqd *NSQD
 }
 
-
 func (p *protocol) NewClient(conn net.Conn) *client {
 	return newClient(conn)
 }
@@ -59,24 +58,39 @@ func (p *protocol) IOLoop(client *client) error {
 //处理来自消费者的订阅消息以及将消息队列中保存的数据发送给消费者
 func (p *protocol) messagePump(client *client) {
 	var err error
+	var msg *Message
 	var memoryMsgChan chan *Message
+	var backendMsgChan <-chan []byte
 	var subChannel *Channel
 	//这里新创建subEventChan是为了在下面可以把它置为nil以实现“一个客户端只能订阅一次”的目的
 	subEventChan := client.SubEventChan
 
 	for {
 		select {
-		case subChannel = <-subEventChan:  //表示有订阅事件发生,这里的subChannel就是消费者实际绑定的channel
-			log.Printf("topic:%s channel:%s 发生订阅事件",subChannel.topicName,subChannel.name)
+		case subChannel = <-subEventChan: //表示有订阅事件发生,这里的subChannel就是消费者实际绑定的channel
+			log.Printf("topic:%s channel:%s 发生订阅事件", subChannel.topicName, subChannel.name)
 			memoryMsgChan = subChannel.memoryMsgChan
+			backendMsgChan = subChannel.backend.ReadChan()
 			// you can't SUB anymore
 			subEventChan = nil
-		case msg := <-memoryMsgChan: //如果channel对应的内存通道有消息的话
-			err = p.SendMessage(client, msg)
+			continue
+		case msg = <-memoryMsgChan: //如果channel对应的内存通道有消息的话
+		case buf := <-backendMsgChan:
+			msg, err = decodeMessage(buf)
 			if err != nil {
-				log.Printf("PROTOCOL(V2): [%s] messagePump error - %s", client.RemoteAddr(), err)
-				goto exit
+				log.Printf("failed to decode message - %s", err)
+				continue
 			}
+		}
+
+		//time.Sleep(time.Second*3)
+		err = p.SendMessage(client, msg)
+		if err != nil {
+			go func() {
+				_ = subChannel.PutMessage(msg)
+			}()
+			log.Printf("PROTOCOL(V2): [%s] messagePump error - %s", client.RemoteAddr(), err)
+			goto exit
 		}
 	}
 
@@ -84,17 +98,17 @@ exit:
 	log.Printf("PROTOCOL(V2): [%s] exiting messagePump", client.RemoteAddr())
 }
 
-func (p *protocol) Exec(client *client, params [][]byte)  error {
+func (p *protocol) Exec(client *client, params [][]byte) error {
 	switch {
 	case bytes.Equal(params[0], []byte("PUB")): //Publish a message to a topic
 		return p.PUB(client, params)
 	case bytes.Equal(params[0], []byte("SUB")): //Subscribe to a topic/channel
 		return p.SUB(client, params)
 	}
-	return  errors.New(fmt.Sprintf("invalid command %s", params[0]))
+	return errors.New(fmt.Sprintf("invalid command %s", params[0]))
 }
 
-func (p *protocol) SUB(client *client, params [][]byte)  error {
+func (p *protocol) SUB(client *client, params [][]byte) error {
 	topicName := string(params[1])
 	channelName := string(params[2])
 
@@ -107,15 +121,15 @@ func (p *protocol) SUB(client *client, params [][]byte)  error {
 	return nil
 }
 
-func (p *protocol) PUB(client *client, params [][]byte)  error {
+func (p *protocol) PUB(client *client, params [][]byte) error {
 	var err error
 	topicName := string(params[1])
-	messageLen := make([]byte,4)
-	_, err  = io.ReadFull(client.Reader, messageLen)
+	messageLen := make([]byte, 4)
+	_, err = io.ReadFull(client.Reader, messageLen)
 	if err != nil {
 		return err
 	}
-	bodyLen:= int32(binary.BigEndian.Uint32(messageLen))
+	bodyLen := int32(binary.BigEndian.Uint32(messageLen))
 	messageBody := make([]byte, bodyLen)
 	_, err = io.ReadFull(client.Reader, messageBody)
 	if err != nil {
@@ -124,7 +138,7 @@ func (p *protocol) PUB(client *client, params [][]byte)  error {
 
 	topic := p.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	log.Printf("receive message from %s, topic:%s, message: %s",client.RemoteAddr(),topicName,string(messageBody))
+	log.Printf("receive message from %s, topic:%s, message: %s", client.RemoteAddr(), topicName, string(messageBody))
 	_ = topic.PutMessage(msg)
 	return nil
 }
@@ -139,7 +153,7 @@ func (p *protocol) SendMessage(client *client, msg *Message) error {
 	return p.Send(client, msgByte)
 }
 
-func (p *protocol) Send(client *client,data []byte) error {
+func (p *protocol) Send(client *client, data []byte) error {
 	client.Lock()
 	defer client.Unlock()
 	_, err := SendFramedResponse(client.Writer, data)
@@ -165,4 +179,3 @@ func SendFramedResponse(w io.Writer, data []byte) (int, error) {
 	n, err = w.Write(data)
 	return n + 4, err
 }
-
