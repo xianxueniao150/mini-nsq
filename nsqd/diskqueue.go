@@ -40,7 +40,7 @@ type diskQueue struct {
 func NewDiskQueue(name string) *diskQueue {
 	d := diskQueue{
 		name:              name,
-		maxBytesPerFile:   24,
+		maxBytesPerFile:   100 * 1024,
 		readChan:          make(chan []byte),
 		writeChan:         make(chan []byte),
 		writeResponseChan: make(chan error),

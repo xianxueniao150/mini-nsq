@@ -13,6 +13,10 @@ type MessageID [MsgIDLength]byte
 type Message struct {
 	ID   MessageID
 	Body []byte
+
+	// for in-flight handling
+	index int   // 表示在inFlightPQ中的下标位置
+	pri   int64 //过时时间
 }
 
 func NewMessage(id MessageID, body []byte) *Message {
@@ -35,11 +39,17 @@ func (m *Message) Bytes() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeMessage(b []byte) (*Message, error) {
+func DecodeMessage(b []byte) (*Message, error) {
 	var msg Message
 	copy(msg.ID[:], b[:MsgIDLength])
 	msg.Body = b[MsgIDLength:]
 	return &msg, nil
+}
+
+func decodeMessageID(b []byte) MessageID {
+	var msgID MessageID
+	copy(msgID[:], b)
+	return msgID
 }
 
 func writeMessageToBackend(msg *Message, bq *diskQueue) error {

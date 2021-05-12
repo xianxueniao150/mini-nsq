@@ -76,19 +76,16 @@ func (p *protocol) messagePump(client *client) {
 			continue
 		case msg = <-memoryMsgChan: //如果channel对应的内存通道有消息的话
 		case buf := <-backendMsgChan:
-			msg, err = decodeMessage(buf)
+			msg, err = DecodeMessage(buf)
 			if err != nil {
 				log.Printf("failed to decode message - %s", err)
 				continue
 			}
 		}
 
-		//time.Sleep(time.Second*3)
+		subChannel.StartInFlightTimeout(msg)
 		err = p.SendMessage(client, msg)
 		if err != nil {
-			go func() {
-				_ = subChannel.PutMessage(msg)
-			}()
 			log.Printf("PROTOCOL(V2): [%s] messagePump error - %s", client.RemoteAddr(), err)
 			goto exit
 		}
@@ -104,6 +101,10 @@ func (p *protocol) Exec(client *client, params [][]byte) error {
 		return p.PUB(client, params)
 	case bytes.Equal(params[0], []byte("SUB")): //Subscribe to a topic/channel
 		return p.SUB(client, params)
+	case bytes.Equal(params[0], []byte("FIN")): //Finish a message (indicate successful processing)
+		return p.FIN(client, params)
+	case bytes.Equal(params[0], []byte("REQ")): //Re-queue a message (indicate failure to process)
+		return p.REQ(client, params)
 	}
 	return errors.New(fmt.Sprintf("invalid command %s", params[0]))
 }
@@ -117,7 +118,7 @@ func (p *protocol) SUB(client *client, params [][]byte) error {
 	channel = topic.GetChannel(channelName)
 	// update message pump
 	client.SubEventChan <- channel
-
+	client.Channel = channel
 	return nil
 }
 
@@ -140,6 +141,27 @@ func (p *protocol) PUB(client *client, params [][]byte) error {
 	msg := NewMessage(topic.GenerateID(), messageBody)
 	log.Printf("receive message from %s, topic:%s, message: %s", client.RemoteAddr(), topicName, string(messageBody))
 	_ = topic.PutMessage(msg)
+	return nil
+}
+
+func (p *protocol) FIN(client *client, params [][]byte) error {
+	msgID := decodeMessageID(params[1])
+	log.Printf("ready to finish message -- msgID: %v", msgID)
+	err := client.Channel.FinishMessage(msgID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+//REQ <message_id>\n
+func (p *protocol) REQ(client *client, params [][]byte) error {
+	msgID := decodeMessageID(params[1])
+	log.Printf("ready to requeue message -- msgID: %v", msgID)
+	err := client.Channel.RequeueMessage(msgID)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

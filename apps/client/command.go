@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"github.com/bowen/mynsq/nsqd"
 	"io"
 )
 
@@ -14,8 +15,6 @@ type Command struct {
 	Params [][]byte
 	Body   []byte
 }
-
-
 
 // WriteTo implements the WriterTo interface and
 // serializes the Command to the supplied Writer.
@@ -75,10 +74,21 @@ func Publish(topic string, body []byte) *Command {
 	return &Command{[]byte("PUB"), params, body}
 }
 
-
 // Subscribe creates a new Command to subscribe to the given topic/channel
 func Subscribe(topic string, channel string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel)}
 	return &Command{[]byte("SUB"), params, nil}
 }
 
+// Finish creates a new Command to indiciate that
+// a given message (by id) has been processed successfully
+func Finish(id nsqd.MessageID) *Command {
+	var params = [][]byte{id[:]}
+	return &Command{[]byte("FIN"), params, nil}
+}
+
+// Requeue creates a new Command to indicate that a given message (by id) should be requeued
+func Requeue(id nsqd.MessageID) *Command {
+	var params = [][]byte{id[:]}
+	return &Command{[]byte("REQ"), params, nil}
+}

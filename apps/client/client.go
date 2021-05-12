@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/bowen/mynsq/nsqd"
 	"log"
 	"net"
+	"reflect"
 	"time"
 )
 
@@ -16,33 +18,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var cmd *Command
-	pubOnce(conn)
-	time.Sleep(time.Second * 3)
+	pub(conn, "mytopic", []byte("one one "))
+	pub(conn, "mytopic", []byte("two two"))
+	pub(conn, "mytopic", []byte("three three"))
 
-	cmd = Subscribe("mytopic", "mychannel")
+	cmd := Subscribe("mytopic", "mychannel")
 	cmd.WriteTo(conn)
 
 	select {}
 }
 
-func pubOnce(conn net.Conn) {
-	var cmd *Command
-	cmd = Publish("mytopic", []byte("one one "))
-	cmd.WriteTo(conn)
-
-	cmd = Publish("mytopic", []byte("two two"))
-	cmd.WriteTo(conn)
-
-	cmd = Publish("mytopic", []byte("three three"))
-	cmd.WriteTo(conn)
-
-	cmd = Publish("mytopic", []byte("four four"))
-	cmd.WriteTo(conn)
-}
-
 func readFully(conn net.Conn) {
 	len := make([]byte, 4)
+	retry := 0
 	for {
 		_, err := conn.Read(len)
 		if err != nil {
@@ -55,6 +43,32 @@ func readFully(conn net.Conn) {
 		if err != nil {
 			fmt.Printf("error during read: %s", err)
 		}
-		log.Printf("local:%s, receive: <%s> ,size:%d\n", conn.LocalAddr(), data[16:n], n)
+		msg, _ := nsqd.DecodeMessage(data)
+		log.Printf("local:%s, receive: id:<%v> body:<%s>,size:%d\n", conn.LocalAddr(), msg.ID, msg.Body, n)
+		if reflect.DeepEqual(msg.Body, []byte("two two")) && retry < 3 {
+			retry++
+			requeue(conn, msg.ID)
+			log.Printf("requeue message success -- msgID: %s", msg.Body)
+			time.Sleep(time.Second)
+		}
+		if reflect.DeepEqual(msg.Body, []byte("three three")) {
+			finish(conn, msg.ID)
+			log.Printf("finish message success -- msgID: %s", msg.Body)
+		}
 	}
+}
+
+func pub(conn net.Conn, topic string, msg []byte) {
+	cmd := Publish(topic, msg)
+	cmd.WriteTo(conn)
+}
+
+func requeue(conn net.Conn, id nsqd.MessageID) {
+	cmd := Requeue(id)
+	cmd.WriteTo(conn)
+}
+
+func finish(conn net.Conn, id nsqd.MessageID) {
+	cmd := Finish(id)
+	cmd.WriteTo(conn)
 }

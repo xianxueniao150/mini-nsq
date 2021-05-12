@@ -3,6 +3,7 @@ package nsqd
 import (
 	"log"
 	"sync"
+	"time"
 )
 
 type Topic struct {
@@ -14,7 +15,8 @@ type Topic struct {
 	memoryMsgChan     chan *Message //暂存发送到该 topic 中的 message
 	channelUpdateChan chan int      //当该 topic 下的 channel 发生变动时，用于通知
 
-	backend *diskQueue
+	backend   *diskQueue
+	idFactory *guidFactory
 }
 
 // Topic constructor
@@ -22,8 +24,9 @@ func NewTopic(topicName string) *Topic {
 	t := &Topic{
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
-		memoryMsgChan:     make(chan *Message, 1),
+		memoryMsgChan:     make(chan *Message, 100),
 		channelUpdateChan: make(chan int),
+		idFactory:         NewGUIDFactory(),
 	}
 	t.backend = NewDiskQueue(topicName)
 	go t.messagePump() //开启工作协程
@@ -72,7 +75,7 @@ func (t *Topic) messagePump() {
 		select {
 		case msg = <-memoryMsgChan:
 		case buf = <-backendChan:
-			msg, err = decodeMessage(buf)
+			msg, err = DecodeMessage(buf)
 			if err != nil {
 				log.Printf("failed to decode message - %s", err)
 				continue
@@ -131,6 +134,16 @@ func (t *Topic) getOrCreateChannel(channelName string) (*Channel, bool) {
 }
 
 func (t *Topic) GenerateID() MessageID {
-	var h MessageID
-	return h
+	var i int64 = 0
+	for {
+		id, err := t.idFactory.NewGUID()
+		if err == nil {
+			return id.Hex()
+		}
+		if i%10000 == 0 {
+			log.Printf("TOPIC(%s): failed to create guid - %s", t.name, err)
+		}
+		time.Sleep(time.Millisecond)
+		i++
+	}
 }
